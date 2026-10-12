@@ -1,0 +1,12 @@
+{
+  "name": "@local/dsh-cc-computer-use-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "把本地的 cc-computer-use MCP server（stdio）接入 DSH：一行 Host 插件 + 连接配置，无入口代码",
+  "type": "module",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
