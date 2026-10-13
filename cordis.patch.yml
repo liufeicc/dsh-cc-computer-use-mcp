@@ -16,9 +16,8 @@
       config:
         serverName: cc-computer-use
         transport: stdio
-        # 必填：改成你自己机器上 cc-computer-use 冻结产物的绝对路径，
-        # 形如 <cc-computer-use 仓库目录>/dist/computer-use-mcp。
-        command: /path/to/cc-computer-use/dist/computer-use-mcp
+        # 必填：cc-computer-use 冻结产物的绝对路径（<仓库目录>/dist/computer-use-mcp）。
+        command: /home/liufei/data/claude-workspace/cc-computer-use/dist/computer-use-mcp
         args: []
         env:
           # server 子进程必须继承 X11 display 才能读屏/注入（cc-computer-use 项目 README 的硬前提）。

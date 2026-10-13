@@ -17,3 +17,6 @@ pnpm-debug.log*
 .env
 .env.local
 .npmrc.local
+
+# 编辑/升级留下的备份文件（不入库）
+*.bak*
