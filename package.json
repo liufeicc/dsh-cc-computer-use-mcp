@@ -1,9 +1,18 @@
 {
   "name": "@local/dsh-cc-computer-use-mcp",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "把本地的 cc-computer-use MCP server（stdio）接入 DSH：一行 Host 插件 + 连接配置，无入口代码",
+  "description": "把本地的 cc-computer-use MCP server（stdio）按 root agent 各挂一份：每个会话一块独立的 Xephyr 隔离屏与私有 AT-SPI 总线",
   "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml"
+  ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

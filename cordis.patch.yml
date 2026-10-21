@@ -1,29 +1,42 @@
-# cc-computer-use MCP bundle：只做一件事 —— 插入一行 Host 插件，
-# 用 stdio 把本地已打包的 cc-computer-use MCP server 挂到模型工具表里。
+# cc-computer-use MCP bundle：插入**本包自己的插件行**（不是直接插入
+# @deepseek-ai/dsh-mcp-client）。
 #
-# 说明（为什么这么写）：
+# 为什么不再直接 insert mcp-client（2026-10-21 改动）：
+#   mcp-client 挂在 profile 作用域 —— 整个 dsh 进程只 spawn 一个 server，于是所有会话
+#   共用同一块 Xephyr、同一个指针/焦点、同一张 ref 表。两个 agent 同时用就互相抢。
+#   现在改由 index.js 监听 agent/created，为**每个 root agent** 在它自己的 agent.ctx 上
+#   挂一份 mcp-client，从而每个会话一个 MCP 进程、一块独立屏、一条私有 AT-SPI 总线。
+#   为什么必须多进程（而不是一进程多屏）：libatspi 的 atspi_init() 是进程级一次性的，
+#   一个进程只能绑一条总线 —— 详见 index.js 的模块头注释。
+#
+# 字段说明（与 @deepseek-ai/dsh-mcp-client 的 stdio 配置同名，index.js 直接透传）：
 # - serverName 是**本地命名空间**，决定模型看到的工具名：
 #   mcp__cc-computer-use__<原工具名>，例如 mcp__cc-computer-use__get_ui_tree。
 #   `-` 在 DeepSeek 函数名契约内，不会被哈希改名。
-#   与cc-computer-use 项目 README 的告警保持一致（服务名要用 cc-computer-use，不能用 computer-use）。
+#   多个 agent 复用同一 serverName 是安全的：工具注册在 agent 的 scope-local 层
+#   （DSH 源码原话：「for a per-agent variant, register through that agent's agent.ctx」）。
+#   与 cc-computer-use 项目 README 的告警保持一致（服务名要用 cc-computer-use）。
 # - 用 dist/ 里的冻结产物（PyInstaller onedir + 薄 wrapper），所以**不需要 conda 在 PATH 里**。
 # - env 叠加在「已清洗的进程环境」之上；清洗只剔除 KEY/PASSWORD/SECRET/TOKEN 形状的
 #   变量与全部 DSH_*，PATH/HOME/locale/DISPLAY 都会保留。这里显式写出的两项是**声明依赖**，
 #   缺了就会以可见的方式失败，而不是变成难查的怪现象。
 - insert:
-    - id: mcp-cc-computer-use
-      name: '@deepseek-ai/dsh-mcp-client'
+    - id: cc-cu-per-agent
+      name: '@local/dsh-cc-computer-use-mcp'
       config:
         serverName: cc-computer-use
-        transport: stdio
         # 必填：cc-computer-use 冻结产物的绝对路径（<仓库目录>/dist/computer-use-mcp）。
+        # ⚠️ 新环境要先跑 cc-computer-use 的 build.sh（或把这里改成开发模式：conda 的
+        #    python + args: [-m, computer_use_mcp.server] + PYTHONPATH）。
         command: /home/liufei/data/claude-workspace/cc-computer-use/dist/computer-use-mcp
         args: []
         env:
-          # server 子进程必须继承 X11 display 才能读屏/注入（cc-computer-use 项目 README 的硬前提）。
+          # MCP server 子进程必须继承 X11 display 才能读屏/注入（cc-computer-use 的硬前提）。
           # 用 !!js 引用宿主已有值，而不是写死 :1 —— 换 display 或换机器都不用改。
           DISPLAY: !!js process.env.DISPLAY
-          # 防 ~/.local 下的包遮蔽冻结产物内的依赖（cc-computer-use 项目 README 要求每条命令都带）
+          # 防 ~/.local 下的包遮蔽冻结产物内的依赖（cc-computer-use README 要求每条命令都带）
           PYTHONNOUSERSITE: '1'
-        # 起不来就拒绝激活：宁可启动时炸一次，也不要「工具表悄悄少了一堆工具」
-        failOnStartupError: true
+        # ⚠️ 这里**不能**用 true：本插件按 agent 挂载，一个会话的 server 起不来不该让
+        #    「创建会话」这件事失败。true 会让 agent.ctx.plugin 的 ready 检查抛错 ——
+        #    宁可那个会话少一批工具（并有日志），也不要整个会话打不开。
+        failOnStartupError: false

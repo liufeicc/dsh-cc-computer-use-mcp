@@ -2,52 +2,112 @@
 
 # dsh-cc-computer-use-mcp
 
-把本地的 [cc-computer-use](https://github.com/liufeicc/cc-computer-use) MCP server 接入 DeepSeek Harness 的**纯配置 bundle** ——
-只有两个文件，**没有 Host/Client 入口代码**，全部行为由 `@deepseek-ai/dsh-mcp-client` 那一行插件承担。
+把本地的 [cc-computer-use](https://github.com/liufeicc/cc-computer-use) MCP server 接入 DeepSeek Harness——
+**每个 root 会话一份独立进程**，于是每个会话各有一块自己的 Xephyr 隔离屏和一条私有 AT-SPI 总线。
 
 ## 它加了什么
 
 profile `web` 里多一行 Host 插件：
 
 ```
-id: mcp-cc-computer-use
-name: @deepseek-ai/dsh-mcp-client
+id: cc-cu-per-agent
+name: '@local/dsh-cc-computer-use-mcp'
 ```
 
-以 stdio 方式拉起 `cc-computer-use/dist/computer-use-mcp`，于是模型工具表里多出 17 个工具，
-命名格式 `mcp__cc-computer-use__<原工具名>`：
+它监听 `agent/created`，对**每个 root agent** 在它自己的 `agent.ctx` 上挂一份
+`@deepseek-ai/dsh-mcp-client`。于是模型工具表里多出 17 个工具，命名格式
+`mcp__cc-computer-use__<原工具名>`：
 
 | 工具 | 用途 |
 |---|---|
-| `mcp__cc-computer-use__get_ui_tree` | 读无障碍树（结构化文本，主要感知手段） |
-| `mcp__cc-computer-use__get_screen_text` | OCR 出带坐标的文本（灰区应用的主要感知手段） |
-| `mcp__cc-computer-use__find_element` / `element_info` | 按文本/角色/应用搜元素 |
-| `mcp__cc-computer-use__click` / `double_click` / `type_text` / `press_key` / `scroll` / `drag` | 元素级优先的三级操作 |
-| `mcp__cc-computer-use__get_last_click_image` | 回看最近一次坐标点击的实际落点 |
-| `mcp__cc-computer-use__act_sequence` | 一串动作一次提交（省掉往返，实测往返 30~70s 而操作只要零点几秒） |
-| `mcp__cc-computer-use__get_screen_layout` / `screenshot` | 屏幕布局 / 截图 |
-| `mcp__cc-computer-use__list_windows` / `wait_window` / `launch_app` | 窗口枚举 / 等窗口 / 在目标 display 上起应用 |
+| `get_ui_tree` | 读无障碍树（结构化文本，主要感知手段） |
+| `get_screen_text` | OCR 出带坐标的文本（灰区应用的主要感知手段） |
+| `find_element` / `element_info` | 按文本/角色/应用搜元素 |
+| `click` / `double_click` / `type_text` / `press_key` / `scroll` / `drag` | 元素级优先的三级操作 |
+| `get_last_click_image` | 回看最近一次坐标点击的实际落点 |
+| `act_sequence` | 一串动作一次提交（省掉往返，实测往返 30~70s 而操作只要零点几秒） |
+| `get_screen_layout` / `screenshot` | 屏幕布局 / 截图 |
+| `list_windows` / `wait_window` / `launch_app` | 窗口枚举 / 等窗口 / 在目标 display 上起应用 |
 
-## 为什么这么配
+## 为什么是「每个会话一个进程」
 
-- **用冻结产物而不是 conda python**：`dist/computer-use-mcp` 是 PyInstaller onedir 的薄 wrapper，
-  因此不要求 conda 环境在 `PATH` 里，启动也更快。改动源码后要重跑 `bash build.sh` 才生效。
-  开发期想改源码立即生效，就把 `command` 换成 conda 的 `python` + `args: [-m, computer_use_mcp.server]`
-  并补 `PYTHONPATH`（见 cc-computer-use 项目 README 第六节 B 方案）。
-- **`serverName: cc-computer-use`**：cc-computer-use 项目 README 实测告警「不能用 `computer-use`」。`-` 在 DeepSeek
-  函数名契约 `[A-Za-z0-9_-]` 之内，所以不会被哈希改名，工具名稳定、可长期写进权限规则。
-- **`DISPLAY` 走 `!!js process.env.DISPLAY`**：server 子进程必须继承 X11 display 才能读屏/注入，
-  写死 `:1` 换 display 就废；引用宿主已有值即可。顺带说明：子进程环境会经过清洗，但清洗只剔除
-  `KEY|PASSWORD|SECRET|TOKEN` 形状的变量与全部 `DSH_*`，`DISPLAY`/`PATH`/`HOME`/locale 都保留 ——
-  这里显式写出是**声明依赖**，不是绕过清洗。
-- **`failOnStartupError: true`**：连不上就拒绝激活。宁可启动时炸一次，也不要「工具表悄悄少了一堆工具」
-  然后在对话里表现为模型"不会用电脑"。
+### 先看原来的问题
 
-## 维护
+cc-computer-use 的隔离屏是「**一个 MCP server 进程 = 一块 Xephyr + 一条私有 AT-SPI 总线**」。
+它原本假设 MCP server 由 Claude Code 按会话拉起（一会话一进程），但 DSH 的
+`@deepseek-ai/dsh-mcp-client` 挂在 **profile 作用域**（`scopeOf(ctx) ?? ctx.root`），
+整个 dsh 进程只 spawn 一个 server。于是所有会话共用：
 
-- 改了 `cordis.patch.yml`：profile 是 `patchReload: live`，保存即重载，server 连接会原地重建。
-- 改了 `package.json`（包名/版本）：需要重启 harness 才能加载新的模块代际。
-- 卸载：`plugin_manager` 的 `remove_bundle`，target 传 `@local/dsh-cc-computer-use-mcp`。
+- 同一块 Xephyr（同一套 X11 指针/键盘焦点）
+- 同一个 i3 窗口树 —— A 用 `launch_app` 起的窗口，B 的 `list_windows` 也看得见，
+  B 的 `click` 可能点到 A 的窗口上
+- 同一份 `RefTable`（ref 号会串）、同一把 `ScreenLock`（一个会话持锁，另一个被拒）
+- 同一条私有 AT-SPI 总线
+
+两个 agent 同时用就互相抢——表现就是「抢隔离屏」。
+
+### 为什么不能「一个进程里按会话开多块屏」
+
+那条路看着更省进程，但撞上 libatspi 的硬约束：`atspi_init()` 是**进程级、一次性**的，
+一个进程只能绑一条 AT-SPI 总线；跨总线 `exit+init` 实测会损坏其内部状态
+（见 cc-computer-use 的 `backend/linux/atspi.py` 里 `_BUS_STALE_ERROR` 的注释）。
+两块屏必然两条总线，所以**两块屏必须两个进程**。这也正是 cc-computer-use 自己的设计假设。
+
+### 为什么只挂 root agent
+
+subagent 与主 agent 是同一个任务的两只手，本就该在同一块屏上协作（串行由
+cc-computer-use 的屏锁保证）。而 DSH 的工具视图沿 **scope 祖先链**继承
+（`ToolRuntime.view` → `chainLayers`：全局层 + 祖先链每一层），所以 subagent 自动看到
+父 agent 挂的这批工具，不需要、也不应该再起一个进程——否则会多出一块没人用的屏。
+
+判断「子会话」用了三条判据，任一条成立即跳过：`agent.parentAgent`、
+`session.header.origin === 'subagent'`、`session.header.delegationDepth > 0`。
+
+### 生命周期
+
+`agent.ctx` 是 agent-local 的作用域，文档原话是「its contributions are agent-local,
+unwind on disposal」。所以会话关掉 → 插件回卷 → MCP 子进程退出 → 它起的 Xephyr 由
+cc-computer-use 的 `atexit` 回收，不留孤儿屏。
+
+## 为什么 `serverName` 可以复用同名
+
+工具经 `ctx.tools.register` 注册成 **scope-local**。DSH 源码里那条重名报错的原话是：
+
+> `tool "X" is already registered (for a per-agent variant, register through that agent's agent.ctx instead)`
+
+所以多个 agent 用同一个 `serverName: cc-computer-use` 安全，模型看到的工具名也不变。
+
+## 安装 / 新环境注意
+
+1. cc-computer-use 的冻结产物必须在 `config.command` 指向的路径存在
+   （`<cc-computer-use 仓库>/dist/computer-use-mcp`）。改了源码要重跑它的 `build.sh`。
+2. **本包需要 `@deepseek-ai/dsh-mcp-client` 可解析**。插件的 `package.json` 没声明它
+   （profile 里没有 `@deepseek-ai/*`），所以靠一个软链：
+
+   ```bash
+   mkdir -p node_modules/@deepseek-ai
+   ln -sfn <dsh 安装目录>/node_modules/@deepseek-ai/dsh-mcp-client \
+           node_modules/@deepseek-ai/dsh-mcp-client
+   ```
+
+   `node_modules/` 已在 `.gitignore` 里，换机器/重装后要重建这条软链。
+   DSH 升级若换了安装目录，同样要重建。
+3. profile 里 `@local/dsh-cc-computer-use-mcp` 的 `link:` 依赖与
+   `node_modules/@local` 软链指向本目录（与其他本地 bundle 一致）。
+
+## 验证「两个会话各一块屏」
+
+1. 在两个会话里各调用一次 `mcp__cc-computer-use__get_ui_tree`（首次使用才会惰性起屏）。
+2. 看进程与屏号：
+
+   ```bash
+   ps -ef | grep -E "computer-use-mcp|Xephyr" | grep -v grep
+   ls -d /tmp/cc-cu-at-spi-d* 2>/dev/null
+   ```
+
+   应当看到 **2 个** `computer-use-mcp` 进程、**2 个**不同屏号的 Xephyr、
+   **2 个**不同的 `/tmp/cc-cu-at-spi-d<num>-*` 目录。
+3. 在 A 会话 `launch_app` 起一个应用，在 B 会话 `list_windows` —— B 不该看到 A 的窗口。
 
 ## 许可证
 
