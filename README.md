@@ -29,6 +29,30 @@ It listens for `agent/created` and mounts one `@deepseek-ai/dsh-mcp-client` on *
 | `get_screen_layout` / `screenshot` | Screen layout / screenshot |
 | `list_windows` / `wait_window` / `launch_app` | Enumerate windows / wait for one / launch an app on the target display |
 
+## Mounting follows the workspace MCP switch (since 2026-10-23)
+
+These tools register in **each agent's own layer** (scope-local): the global lens cannot see them, so
+`@local/dsh-mcp-workspace-policy`'s MCP menu used to omit this server entirely and `restrict` could not hide
+it. The two sides are now wired together:
+
+- this plugin calls `declarePerAgent({ name })` on the policy service, so the menu lists `cc-computer-use`
+  with the same tool-count hint as any other server (the Host counts from the live sessions that mounted it);
+- **unchecked means not mounted** — no MCP process, no Xephyr, no AT-SPI bus (default off, matching global
+  MCP servers);
+- check/uncheck makes the policy emit `mcp-workspace/changed`; this plugin mounts or calls
+  `fiber.dispose()` for the live sessions in that workspace, so the child exits and `atexit` reclaims the
+  screen;
+- when the policy service is absent (not installed, or an older version without the declaration API) it
+  **fails open** and mounts as before — a missing policy must never take the user's tools away.
+
+> ⚠️ After upgrading, check `cc-computer-use` in the MCP menu for every workspace that needs computer
+> control. Default-off means unselected workspaces no longer get these tools.
+
+On plugin hot-reload the old fiber is stored on
+`agent[Symbol.for('dsh-cc-computer-use-mcp/mounted-fiber')]`; the new instance adopts it and then keeps or
+disposes it according to the latest selection — otherwise a second process would be mounted and hit
+mcp-client's `serverName` reservation error.
+
 ## Why one process per session
 
 ### The problem
@@ -112,6 +136,15 @@ colliding, and the model-facing tool names stay stable.
    Expect **two** `computer-use-mcp` processes, **two** Xephyrs on different display numbers, and **two**
    distinct `/tmp/cc-cu-at-spi-d<num>-*` directories.
 3. Launch an app with `launch_app` in session A and run `list_windows` in session B — B must not see A's window.
+
+## Offline test
+
+```bash
+node test/gating.mjs
+```
+
+No processes and no host required: a fake context exercises the gating logic (mount only when checked,
+dispose on uncheck, skip subagents, fail open without the policy service, adopt the old fiber on hot-reload).
 
 ## License
 

@@ -29,6 +29,27 @@ name: '@local/dsh-cc-computer-use-mcp'
 | `get_screen_layout` / `screenshot` | 屏幕布局 / 截图 |
 | `list_windows` / `wait_window` / `launch_app` | 窗口枚举 / 等窗口 / 在目标 display 上起应用 |
 
+## 挂载由「工作区 MCP 开关」决定（2026-10-23 起）
+
+这些工具注册在**各 agent 自己的层**（scope-local），全局口径看不见，所以
+`@local/dsh-mcp-workspace-policy` 的 MCP 菜单原先**列不出它**，`restrict` 也管不到它。
+现在两边接上：
+
+- 本插件向策略服务 `declarePerAgent({ name })` 声明自己 → 菜单里出现 `cc-computer-use`
+  这一项，hint 与别的 server 一样显示工具数（由宿主从挂载了它的活会话里数出来）；
+- **没勾选就不挂**：连 MCP 进程、Xephyr、AT-SPI 总线都不起（默认关，与全局 MCP 一致）；
+- 勾选/取消后策略服务发 `mcp-workspace/changed`，本插件对该工作区的活会话就地
+  挂载 / `fiber.dispose()` 卸载，子进程退出、屏由 `atexit` 回收；
+- 策略服务不在（没装、或旧版本没有声明接口）时 **fail open**：退回改造前的行为，
+  每个 root 会话照常挂一份 —— 不能因为策略缺失把用户的工具干掉。
+
+> ⚠️ 上线后第一件事：在 MCP 菜单里给需要电脑操作的工作区**勾上** `cc-computer-use`。
+> 默认关意味着没勾的工作区（包括 `dsh`）不会再有这批工具。
+
+插件热重载时，旧实例挂的 fiber 记在 `agent[Symbol.for('dsh-cc-computer-use-mcp/mounted-fiber')]`
+上，新实例**认领**它再按最新选择决定保留或卸载 —— 否则会挂出第二份进程，撞上
+mcp-client 的 serverName 占用检查。
+
 ## 为什么是「每个会话一个进程」
 
 ### 先看原来的问题
@@ -108,6 +129,15 @@ cc-computer-use 的 `atexit` 回收，不留孤儿屏。
    应当看到 **2 个** `computer-use-mcp` 进程、**2 个**不同屏号的 Xephyr、
    **2 个**不同的 `/tmp/cc-cu-at-spi-d<num>-*` 目录。
 3. 在 A 会话 `launch_app` 起一个应用，在 B 会话 `list_windows` —— B 不该看到 A 的窗口。
+
+## 离线测试
+
+```bash
+node test/gating.mjs
+```
+
+不启动任何进程、不需要宿主：用假 ctx 验证门控逻辑（勾了才挂、取消即卸、子会话不挂、
+无策略时 fail open、热重载认领旧 fiber）。
 
 ## 许可证
 
